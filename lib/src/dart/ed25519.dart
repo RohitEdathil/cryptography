@@ -43,6 +43,61 @@ class DartEd25519 extends Ed25519 {
     ));
   }
 
+  Future<Signature> signDirect(
+    List<int> message, {
+    required List<int> privateKeyBytes,
+    PublicKey? publicKey,
+  }) async {
+    // Take SHA512 hash of the private key.
+    final privateKeyHash = await _sha512.hash(privateKeyBytes);
+    final privateKeyHashFixed = privateKeyHash.bytes.sublist(0, 32);
+    _setPrivateKeyFixedBits(privateKeyHashFixed);
+
+    // We get public key by multiplying the modified private key hash with G.
+    final publicKeyBytes = _pointCompress(_pointMul(
+      Register25519()..setBytes(Uint8List.fromList(privateKeyHashFixed)),
+      Ed25519Point.base,
+    ));
+    final publicKey = SimplePublicKey(
+      publicKeyBytes,
+      type: KeyPairType.ed25519,
+    );
+
+    // Calculate hash of the input.
+    // The second half of the seed hash is used as the salt.
+    final mhSalt = privateKeyHash.bytes.sublist(32);
+    final mhBytes = _join([mhSalt, message]);
+    final mh = await _sha512.hash(mhBytes);
+    final mhL = RegisterL()..readBytes(mh.bytes);
+
+    // Calculate point R.
+    final pointR = _pointMul(mhL.toRegister25519(), Ed25519Point.base);
+    final pointRCompressed = _pointCompress(pointR);
+
+    // Calculate s
+    final shBytes = _join([
+      pointRCompressed,
+      publicKey.bytes,
+      message,
+    ]);
+    final sh = await _sha512.hash(shBytes);
+    final s = RegisterL()..readBytes(sh.bytes);
+    s.mul(s, RegisterL()..readBytes(privateKeyHashFixed));
+    s.add(s, mhL);
+    final sBytes = s.toBytes();
+
+    // The signature bytes are ready
+    final result = Uint8List.fromList(<int>[
+      ...pointRCompressed,
+      ...sBytes,
+    ]);
+
+    return Signature(
+      result,
+      publicKey: publicKey,
+    );
+  }
+
   // Compresses a point
   @override
   Future<Signature> sign(
